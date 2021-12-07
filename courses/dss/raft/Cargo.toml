@@ -8,7 +8,7 @@ authors = [
     "庄天翼 <zty0826@gmail.com>",
     "MIT 6.824 <6824-staff@lists.csail.mit.edu>"
 ]
-edition = "2018"
+edition = "2021"
 publish = false
 
 [dependencies]
@@ -18,14 +18,15 @@ futures-timer = "3.0"
 log = "0.4"
 prost = "0.6"
 prost-derive = "0.6"
-rand = "0.7"
+rand = "0.8"
 
 labcodec = { path = "../labcodec" }
 labrpc = { path = "../labrpc" }
 linearizability = { path = "../linearizability"}
 
 [dev-dependencies]
-env_logger = "0.7"
+env_logger = "0.9"
+pretty_assertions = "1.0"
 
 [build-dependencies]
 prost-build = "0.6"

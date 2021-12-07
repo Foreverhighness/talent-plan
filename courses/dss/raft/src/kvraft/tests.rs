@@ -163,7 +163,7 @@ fn partitioner(
         while done.load(Ordering::Relaxed) == 0 {
             if !is_parked {
                 all.shuffle(&mut rng);
-                let offset = rng.gen_range(0, cfg.n);
+                let offset = rng.gen_range(0..cfg.n);
                 cfg.partition(&all[..offset], &all[offset..]);
                 sleep = Some(delay(rng.gen::<u64>()));
             }
