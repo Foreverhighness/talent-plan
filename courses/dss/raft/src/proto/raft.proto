@@ -2,12 +2,29 @@ syntax = "proto3";
 
 package raftpb;
 
-// Example RequestVote RPC arguments structure.
 message RequestVoteArgs {
-    // Your data here (2A, 2B).
+    uint64 term = 1;            // candidate’s term
+    uint64 candidate_id = 2;    // candidate requesting vote
+    uint64 last_log_index = 3;  // index of candidate’s last log entry (§5.4)
+    uint64 last_log_term = 4;   // term of candidate’s last log entry (§5.4)
 }
 
-// Example RequestVote RPC reply structure.
 message RequestVoteReply {
-    // Your data here (2A).
+    uint64 term = 1;            // currentTerm, for candidate to update itself
+    bool vote_granted = 2;      // true means candidate received vote
+}
+
+
+message AppendEntriesArgs {
+    uint64 term = 1;            // leader’s term
+    uint64 leader_id = 2;       // so follower can redirect clients
+    uint64 prev_log_index = 3;  // index of log entry immediately preceding new ones
+    uint64 prev_log_term = 4;   // term of prevLogIndex entry
+    repeated bytes entries = 5; // log entries to store (empty for heartbeat; may send more than one for efficiency)
+    uint64 leader_commit = 6;   // leader’s commitIndex
+}
+
+message AppendEntriesReply {
+    uint64 term = 1;            // currentTerm, for leader to update itself
+    bool success = 2;           // true if follower contained entry matching prevLogIndex and prevLogTerm
 }
