@@ -1,5 +1,5 @@
 use std::sync::mpsc::{sync_channel, Receiver};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use futures::channel::mpsc::UnboundedSender;
 
@@ -226,7 +226,7 @@ impl Raft {
 // ```
 #[derive(Clone)]
 pub struct Node {
-    // Your code here.
+    raft: Arc<Mutex<Raft>>,
 }
 
 impl Node {
@@ -294,7 +294,7 @@ impl Node {
         // Your code here, if desired.
     }
 
-    /// A service wants to switch to snapshot.  
+    /// A service wants to switch to snapshot.
     ///
     /// Only do so if Raft hasn't have more recent info since it communicate
     /// the snapshot on `apply_ch`.
