@@ -1,3 +1,4 @@
+#![feature(derive_default_enum)]
 #[allow(unused_imports)]
 #[macro_use]
 extern crate log;

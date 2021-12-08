@@ -30,11 +30,20 @@ pub enum ApplyMsg {
     },
 }
 
+/// Role for raft peer.
+#[derive(Default, Clone, Copy, Debug)]
+pub enum Role {
+    #[default]
+    Follower,
+    Candidate,
+    Leader,
+}
+
 /// State of a raft peer.
 #[derive(Default, Clone, Debug)]
 pub struct State {
     pub term: u64,
-    pub is_leader: bool,
+    pub role: Role,
 }
 
 impl State {
@@ -44,7 +53,12 @@ impl State {
     }
     /// Whether this peer believes it is the leader.
     pub fn is_leader(&self) -> bool {
-        self.is_leader
+        matches!(self.role, Role::Leader)
+    }
+
+    /// return Role
+    fn role(&self) -> Role {
+        self.role
     }
 }
 
@@ -263,7 +277,7 @@ impl Node {
         // Your code here.
         // Example:
         // self.raft.term
-        crate::your_code_here(())
+        self.raft.lock().unwrap().state.term()
     }
 
     /// Whether this peer believes it is the leader.
@@ -271,14 +285,19 @@ impl Node {
         // Your code here.
         // Example:
         // self.raft.leader_id == self.id
-        crate::your_code_here(())
+        self.raft.lock().unwrap().state.is_leader()
+    }
+
+    /// Role
+    fn role(&self) -> Role {
+        self.raft.lock().unwrap().state.role()
     }
 
     /// The current state of this peer.
     pub fn get_state(&self) -> State {
         State {
             term: self.term(),
-            is_leader: self.is_leader(),
+            role: self.role(),
         }
     }
 
