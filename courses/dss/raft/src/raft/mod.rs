@@ -90,6 +90,24 @@ pub struct Raft {
     // Your data here (2A, 2B, 2C).
     // Look at the paper's Figure 2 for a description of what
     // state a Raft server must maintain.
+
+    // Persistent state on all servers
+    // (Updated on stable storage before responding to RPCs)
+    voted_for: Option<u64>, // candidateId that received vote in current term
+    logs: Vec<LogEntry>,    // log entries
+
+    // Volatile state on all servers
+    commit_index: u64, // index of highest log entry known to be committed (initialized to 0, increases monotonically)
+    last_applied: u64, // index of highest log entry applied to state machine (initialized to 0, increases monotonically)
+
+    // Volatile state on leaders
+    // (Reinitialized after election)
+    next_index: Vec<u64>, // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
+    match_index: Vec<u64>, // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
+
+    // other state
+    apply_ch: UnboundedSender<ApplyMsg>,
+    leader_id: Option<u64>,
 }
 
 impl Raft {
@@ -115,12 +133,24 @@ impl Raft {
             persister,
             me,
             state: Arc::default(),
+
+            voted_for: None,
+            logs: Vec::new(),
+
+            commit_index: 0,
+            last_applied: 0,
+
+            next_index: Vec::new(),
+            match_index: Vec::new(),
+
+            apply_ch,
+            leader_id: None,
         };
 
         // initialize from state persisted before a crash
         rf.restore(&raft_state);
 
-        crate::your_code_here((rf, apply_ch))
+        rf
     }
 
     /// save Raft's persistent state to stable storage,
