@@ -14,11 +14,17 @@ use self::errors::*;
 use self::persister::*;
 use crate::proto::raftpb::*;
 
+mod seal {
+    #[derive(Clone, Copy, Debug)]
+    pub struct Seal;
+}
 /// As each Raft peer becomes aware that successive log entries are committed,
 /// the peer should send an `ApplyMsg` to the service (or tester) on the same
 /// server, via the `apply_ch` passed to `Raft::new`.
 #[derive(Clone, Debug)]
 pub enum ApplyMsg {
+    // Noop will not go through apply_channel, but commit every log entry before it.
+    Noop(seal::Seal),
     Command {
         data: Vec<u8>,
         index: u64,
