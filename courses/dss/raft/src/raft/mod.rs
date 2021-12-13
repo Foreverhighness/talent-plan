@@ -17,6 +17,7 @@ use crate::proto::raftpb::*;
 /// As each Raft peer becomes aware that successive log entries are committed,
 /// the peer should send an `ApplyMsg` to the service (or tester) on the same
 /// server, via the `apply_ch` passed to `Raft::new`.
+#[derive(Clone, Debug)]
 pub enum ApplyMsg {
     Command {
         data: Vec<u8>,
@@ -28,6 +29,15 @@ pub enum ApplyMsg {
         term: u64,
         index: u64,
     },
+}
+
+// Each entry contains command for state machine, and term when entry was
+// received by leader, and index for simplcity sake.
+#[derive(Clone, Debug)]
+struct LogEntry {
+    command: ApplyMsg,
+    term: u64,
+    index: u64,
 }
 
 /// Role for raft peer.
