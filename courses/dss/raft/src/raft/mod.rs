@@ -2,6 +2,7 @@ use std::sync::mpsc::{sync_channel, Receiver};
 use std::sync::{Arc, Mutex};
 
 use futures::channel::mpsc::UnboundedSender;
+use optional::Optioned;
 
 #[cfg(test)]
 pub mod config;
@@ -93,8 +94,8 @@ pub struct Raft {
 
     // Persistent state on all servers
     // (Updated on stable storage before responding to RPCs)
-    voted_for: Option<u64>, // candidateId that received vote in current term
-    logs: Vec<LogEntry>,    // log entries
+    voted_for: Optioned<u64>, // candidateId that received vote in current term
+    logs: Vec<LogEntry>,      // log entries
 
     // Volatile state on all servers
     commit_index: u64, // index of highest log entry known to be committed (initialized to 0, increases monotonically)
@@ -107,7 +108,7 @@ pub struct Raft {
 
     // other state
     apply_ch: UnboundedSender<ApplyMsg>,
-    leader_id: Option<u64>,
+    leader_id: Optioned<u64>,
 }
 
 impl Raft {
@@ -134,7 +135,7 @@ impl Raft {
             me,
             state: Arc::default(),
 
-            voted_for: None,
+            voted_for: optional::none(),
             logs: Vec::new(),
 
             commit_index: 0,
@@ -144,7 +145,7 @@ impl Raft {
             match_index: Vec::new(),
 
             apply_ch,
-            leader_id: None,
+            leader_id: optional::none(),
         };
 
         // initialize from state persisted before a crash
