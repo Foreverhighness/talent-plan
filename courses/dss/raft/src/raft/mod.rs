@@ -41,6 +41,7 @@ pub enum ApplyMsg {
 // Each entry contains command for state machine, and term when entry was
 // received by leader, and index for simplcity sake.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 struct LogEntry {
     command: ApplyMsg,
     term: u64,
@@ -80,6 +81,7 @@ impl State {
 }
 
 // A single Raft peer.
+#[allow(dead_code)]
 pub struct Raft {
     // RPC end points of all peers
     peers: Vec<RaftClient>,
@@ -217,8 +219,14 @@ impl Raft {
         // });
         // rx
         // ```
+        let peer = &self.peers[server];
+        let peer_clone = peer.clone();
         let (tx, rx) = sync_channel::<Result<RequestVoteReply>>(1);
-        crate::your_code_here((server, args, tx, rx))
+        peer.spawn(async move {
+            let res = peer_clone.request_vote(&args).await.map_err(Error::Rpc);
+            let _ = tx.send(res);
+        });
+        rx
     }
 
     fn start<M>(&self, command: &M) -> Result<(u64, u64)>
@@ -395,6 +403,55 @@ impl RaftService for Node {
     // CAVEATS: Please avoid locking or sleeping here, it may jam the network.
     async fn request_vote(&self, args: RequestVoteArgs) -> labrpc::Result<RequestVoteReply> {
         // Your code here (2A, 2B).
-        crate::your_code_here(args)
+
+        // Get state
+        let rf = self.raft.lock().unwrap();
+        let term = rf.state.term();
+        let voted_for = rf.voted_for;
+        let (last_log_index, last_log_term) = rf.last_log_info();
+        drop(rf);
+
+        // 1. Reply false if term < currentTerm (§5.1)
+        if args.term < term {
+            return Ok(RequestVoteReply {
+                term,
+                vote_granted: false,
+            });
+        }
+        // 2. If votedFor is null or candidateId
+        if voted_for.is_some() && voted_for.unwrap() != args.candidate_id {
+            return Ok(RequestVoteReply {
+                term,
+                vote_granted: false,
+            });
+        }
+        // and candidate’s log is at least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
+        if args.last_log_term < last_log_term {
+            return Ok(RequestVoteReply {
+                term,
+                vote_granted: false,
+            });
+        }
+        if args.last_log_index < last_log_index {
+            return Ok(RequestVoteReply {
+                term,
+                vote_granted: false,
+            });
+        }
+
+        Ok(RequestVoteReply {
+            term,
+            vote_granted: true,
+        })
+    }
+}
+
+impl Raft {
+    /// return last_log_index, last_log_term
+    fn last_log_info(&self) -> (u64, u64) {
+        self.logs
+            .last()
+            .map(|log| (log.index, log.term))
+            .unwrap_or((0, 0))
     }
 }
