@@ -229,6 +229,22 @@ impl Raft {
         rx
     }
 
+    #[allow(dead_code)]
+    fn send_append_entries(
+        &self,
+        server: usize,
+        args: AppendEntriesArgs,
+    ) -> Receiver<Result<AppendEntriesReply>> {
+        let peer = &self.peers[server];
+        let peer_clone = peer.clone();
+        let (tx, rx) = sync_channel::<Result<AppendEntriesReply>>(1);
+        peer.spawn(async move {
+            let res = peer_clone.append_entries(&args).await.map_err(Error::Rpc);
+            let _ = tx.send(res);
+        });
+        rx
+    }
+
     fn start<M>(&self, command: &M) -> Result<(u64, u64)>
     where
         M: labcodec::Message,
@@ -442,6 +458,33 @@ impl RaftService for Node {
         Ok(RequestVoteReply {
             term,
             vote_granted: true,
+        })
+    }
+
+    // just for pass lab2a
+    async fn append_entries(&self, args: AppendEntriesArgs) -> labrpc::Result<AppendEntriesReply> {
+        // Get state
+        let rf = self.raft.lock().unwrap();
+        let term = rf.state.term();
+        drop(rf);
+
+        // 1. Reply false if term < currentTerm (§5.1)
+        if args.term < term {
+            return Ok(AppendEntriesReply {
+                term,
+                success: false,
+            });
+        }
+
+        // 2.Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm (§5.3)
+        // 3. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
+        // 4. Append any new entries not already in the log
+        // 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+        // todo!();
+
+        Ok(AppendEntriesReply {
+            term,
+            success: true,
         })
     }
 }
