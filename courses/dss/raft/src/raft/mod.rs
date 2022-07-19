@@ -5,6 +5,7 @@ use std::time::Duration;
 use futures::channel::mpsc::UnboundedSender;
 use futures::channel::mpsc::{self, Sender};
 use futures::channel::oneshot::{channel, Receiver};
+use futures::stream::FuturesUnordered;
 use futures::{select, FutureExt, StreamExt};
 use futures_timer::Delay;
 use optional::{none, some, Optioned};
@@ -93,7 +94,9 @@ type Logs = Vec<LogEntry>;
 enum Event {
     HigherTerm,
     VoteToCandidate,
+    VoteTimeOut,
     ElectionTimeout,
+    GetMajority,
 }
 use Event::*;
 
@@ -237,6 +240,7 @@ impl Raft {
         server: usize,
         args: RequestVoteArgs,
     ) -> Receiver<Result<RequestVoteReply>> {
+        assert_ne!(self.me, server);
         let peer = &self.peers[server];
         let peer_clone = Arc::clone(peer);
         let (tx, rx) = channel::<Result<RequestVoteReply>>();
@@ -252,6 +256,7 @@ impl Raft {
         server: usize,
         args: AppendEntriesArgs,
     ) -> Receiver<Result<AppendEntriesReply>> {
+        assert_ne!(self.me, server);
         let peer = &self.peers[server];
         let peer_clone = Arc::clone(peer);
         let (tx, rx) = channel::<Result<AppendEntriesReply>>();
@@ -521,7 +526,12 @@ impl Raft {
     /// check term for every request and reply
     fn check_term(&mut self, term: u64) -> bool {
         if self.state.term < term {
+            // must change before return
             self.change_term(term);
+            match self.state.role {
+                Candidate | Leader => self.transform(Follower),
+                Follower | Killed => (),
+            }
             self.send_event(HigherTerm);
             return true;
         }
@@ -567,6 +577,7 @@ impl Raft {
             }
             Candidate => {
                 assert!(matches!(self.state.role, Follower | Candidate));
+                self.change_term(self.state.term + 1);
                 self.voted_for = some(self.me as u64);
             }
             Leader => {
@@ -591,28 +602,104 @@ impl Raft {
         }
     }
 
+    /// follower routine
     async fn handle_follower(raft: &Arc<Mutex<Raft>>, rx: &mut mpsc::Receiver<Event>) {
         let dur = rand::thread_rng().gen_range(ELECTION_TIMEOUT_MIN..ELECTION_TIMEOUT_MAX);
-        let election_timeout = Delay::new(dur);
+        let mut election_timeout = Delay::new(dur).fuse();
         let event = select! {
-            _ = election_timeout.fuse() => ElectionTimeout,
+            _ = election_timeout => ElectionTimeout,
             e = rx.next() => e.unwrap(),
         };
         match event {
-            HigherTerm => {}
-            VoteToCandidate => {}
             ElectionTimeout => {
                 let mut rf = raft.lock().unwrap();
-                let term = rf.state.term;
-                info!("TIME S{} election timeout at T{}", rf.me, term);
-                rf.change_term(term + 1);
+                info!("TIME S{} election timeout at T{}", rf.me, rf.state.term);
                 rf.transform(Candidate);
             }
+            HigherTerm | VoteToCandidate => (),
+            _ => unreachable!(),
         }
     }
-    async fn handle_candidate(_raft: &Arc<Mutex<Raft>>, _rx: &mut mpsc::Receiver<Event>) {
-        todo!()
+
+    /// candidate routine
+    async fn handle_candidate(raft: &Arc<Mutex<Raft>>, rx: &mut mpsc::Receiver<Event>) {
+        let (threshold, old_term, me, mut rxs) = {
+            let rf = raft.lock().unwrap();
+            let term = rf.state.term;
+            let me = rf.me;
+            let (last_log_index, last_log_term) = rf.last_log_info();
+            let args = RequestVoteArgs {
+                term,
+                candidate_id: me as u64,
+                last_log_index,
+                last_log_term,
+            };
+
+            let peers = rf.peers.len();
+            let threshold = peers / 2 + 1;
+            let rxs: FuturesUnordered<_> = (0..me)
+                .chain((me + 1)..peers)
+                .map(|i| rf.send_request_vote(i, args.clone()))
+                .collect();
+            (threshold, term, me, rxs)
+        };
+
+        let dur = rand::thread_rng().gen_range(ELECTION_TIMEOUT_MIN..ELECTION_TIMEOUT_MAX);
+        let mut vote_timeout = Delay::new(dur).fuse();
+
+        let mut cnt = 1;
+        let event = loop {
+            let (reply, event) = select! {
+                r = rxs.next() => (r, None),
+                e = rx.next() => (None, e),
+                _ = vote_timeout => break VoteTimeOut,
+            };
+            if let Some(Ok(reply)) = reply {
+                match reply {
+                    Ok(RequestVoteReply { term, vote_granted }) => {
+                        let mut rf = raft.lock().unwrap();
+                        if rf.state.term < term {
+                            rf.change_term(term);
+                            rf.transform(Follower);
+                            // dont send HigherTerm
+                            return;
+                        }
+                        if vote_granted {
+                            cnt += 1;
+                            info!(
+                                "VOTE S{} get vote {}/{} at T{}",
+                                me, cnt, threshold, rf.state.term
+                            );
+                            if cnt >= threshold {
+                                break GetMajority;
+                            }
+                        }
+                    }
+                    Err(Error::Rpc(rpc)) => debug!("RPC error: {:?}", rpc),
+                    _ => unreachable!(),
+                }
+            } else {
+                match event.unwrap() {
+                    HigherTerm => break HigherTerm,
+                    _ => unreachable!(),
+                }
+            }
+        };
+        match event {
+            GetMajority => {
+                let mut rf = raft.lock().unwrap();
+                assert!(rf.state.term == old_term);
+                rf.transform(Leader);
+            }
+            VoteTimeOut => {
+                let mut rf = raft.lock().unwrap();
+                rf.transform(Candidate);
+            }
+            HigherTerm => (),
+            _ => unreachable!(),
+        }
     }
+
     async fn handle_leader(_raft: &Arc<Mutex<Raft>>, _rx: &mut mpsc::Receiver<Event>) {
         todo!()
     }
