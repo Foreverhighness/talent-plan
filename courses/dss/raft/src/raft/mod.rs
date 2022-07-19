@@ -1,12 +1,14 @@
 #![allow(dead_code)]
-use std::alloc::handle_alloc_error;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::channel::mpsc::UnboundedSender;
 use futures::channel::mpsc::{self, Sender};
 use futures::channel::oneshot::{channel, Receiver};
-use optional::{some, Optioned};
+use futures::{select, FutureExt, StreamExt};
+use futures_timer::Delay;
+use optional::{none, some, Optioned};
+use rand::Rng;
 
 #[cfg(test)]
 pub mod config;
@@ -91,6 +93,7 @@ type Logs = Vec<LogEntry>;
 enum Event {
     HigherTerm,
     VoteToCandidate,
+    ElectionTimeout,
 }
 use Event::*;
 
@@ -161,7 +164,7 @@ impl Raft {
             me,
             state: Default::default(),
 
-            voted_for: optional::none(),
+            voted_for: none(),
             logs: Vec::new(),
 
             commit_index: 0,
@@ -171,7 +174,7 @@ impl Raft {
             match_index: Vec::new(),
 
             apply_ch,
-            leader_id: optional::none(),
+            leader_id: none(),
 
             pool,
             tx,
@@ -505,6 +508,8 @@ impl Raft {
     fn change_term(&mut self, new_term: u64) {
         info!("TERM S{} T{} -> T{}", self.me, self.state.term, new_term);
         self.state.term = new_term;
+        self.voted_for = none();
+        self.leader_id = none();
     }
 
     /// send event
@@ -550,6 +555,29 @@ impl Raft {
         node
     }
 
+    /// change state
+    fn transform(&mut self, target: Role) {
+        info!(
+            "TRAN S{} {:?} => {:?} at T{}",
+            self.me, self.state.role, target, self.state.term
+        );
+        match target {
+            Follower => {
+                assert!(matches!(self.state.role, Candidate | Leader));
+            }
+            Candidate => {
+                assert!(matches!(self.state.role, Follower | Candidate));
+                self.voted_for = some(self.me as u64);
+            }
+            Leader => {
+                assert!(matches!(self.state.role, Candidate));
+                self.leader_id = some(self.me as u64);
+            }
+            Killed => {}
+        }
+        self.state.role = target;
+    }
+
     /// state machine
     async fn routine(raft: Arc<Mutex<Raft>>, mut rx: mpsc::Receiver<Event>) {
         loop {
@@ -564,12 +592,28 @@ impl Raft {
     }
 
     async fn handle_follower(raft: &Arc<Mutex<Raft>>, rx: &mut mpsc::Receiver<Event>) {
+        let dur = rand::thread_rng().gen_range(ELECTION_TIMEOUT_MIN..ELECTION_TIMEOUT_MAX);
+        let election_timeout = Delay::new(dur);
+        let event = select! {
+            _ = election_timeout.fuse() => ElectionTimeout,
+            e = rx.next() => e.unwrap(),
+        };
+        match event {
+            HigherTerm => {}
+            VoteToCandidate => {}
+            ElectionTimeout => {
+                let mut rf = raft.lock().unwrap();
+                let term = rf.state.term;
+                info!("TIME S{} election timeout at T{}", rf.me, term);
+                rf.change_term(term + 1);
+                rf.transform(Candidate);
+            }
+        }
+    }
+    async fn handle_candidate(_raft: &Arc<Mutex<Raft>>, _rx: &mut mpsc::Receiver<Event>) {
         todo!()
     }
-    async fn handle_candidate(raft: &Arc<Mutex<Raft>>, rx: &mut mpsc::Receiver<Event>) {
-        todo!()
-    }
-    async fn handle_leader(raft: &Arc<Mutex<Raft>>, rx: &mut mpsc::Receiver<Event>) {
+    async fn handle_leader(_raft: &Arc<Mutex<Raft>>, _rx: &mut mpsc::Receiver<Event>) {
         todo!()
     }
 }
