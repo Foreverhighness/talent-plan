@@ -80,6 +80,8 @@ impl State {
     }
 }
 
+type Logs = Vec<LogEntry>;
+
 // A single Raft peer.
 #[allow(dead_code)]
 pub struct Raft {
@@ -89,7 +91,7 @@ pub struct Raft {
     persister: Box<dyn Persister>,
     // this peer's index into peers[]
     me: usize,
-    state: Arc<State>,
+    state: State,
     // Your data here (2A, 2B, 2C).
     // Look at the paper's Figure 2 for a description of what
     // state a Raft server must maintain.
@@ -97,7 +99,7 @@ pub struct Raft {
     // Persistent state on all servers
     // (Updated on stable storage before responding to RPCs)
     voted_for: Optioned<u64>, // candidateId that received vote in current term
-    logs: Vec<LogEntry>,      // log entries
+    logs: Logs,               // log entries
 
     // Volatile state on all servers
     commit_index: u64, // index of highest log entry known to be committed (initialized to 0, increases monotonically)
@@ -135,7 +137,7 @@ impl Raft {
             peers,
             persister,
             me,
-            state: Arc::default(),
+            state: Default::default(),
 
             voted_for: optional::none(),
             logs: Vec::new(),
@@ -285,7 +287,7 @@ impl Raft {
     pub fn __suppress_deadcode(&mut self) {
         let _ = self.start(&0);
         let _ = self.cond_install_snapshot(0, 0, &[]);
-        let _ = self.snapshot(0, &[]);
+        self.snapshot(0, &[]);
         let _ = self.send_request_vote(0, Default::default());
         self.persist();
         let _ = &self.state;

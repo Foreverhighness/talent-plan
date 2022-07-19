@@ -57,9 +57,26 @@ impl Storage {
 }
 
 fn init_logger() {
+    use std::io::Write;
     use std::sync::Once;
+    use std::time::SystemTime;
     static LOGGER_INIT: Once = Once::new();
-    LOGGER_INIT.call_once(env_logger::init);
+    let now = SystemTime::now();
+    LOGGER_INIT.call_once(move || {
+        env_logger::Builder::from_default_env()
+            .format(move |buf, record| {
+                let ts = SystemTime::now();
+
+                writeln!(
+                    buf,
+                    "[{:04} {:>5}] {}",
+                    ts.duration_since(now).unwrap().as_millis(),
+                    buf.default_styled_level(record.level()),
+                    record.args()
+                )
+            })
+            .init()
+    });
 }
 
 pub struct Config {
