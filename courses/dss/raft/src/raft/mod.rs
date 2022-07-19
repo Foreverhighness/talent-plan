@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use std::alloc::handle_alloc_error;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -152,7 +153,7 @@ impl Raft {
         let peers: Vec<_> = peers.into_iter().map(Arc::new).collect();
         let pool = Arc::clone(&peers[me]);
 
-        let (tx, _) = mpsc::channel(1);
+        let (tx, _) = mpsc::channel(0);
 
         let mut rf = Raft {
             peers,
@@ -533,5 +534,42 @@ impl Raft {
 
         self.voted_for = some(candidate_id);
         self.send_event(VoteToCandidate);
+    }
+
+    /// run raft services
+    fn run(mut self) -> Arc<Mutex<Self>> {
+        let pool = Arc::clone(&self.pool);
+        let (tx, rx) = mpsc::channel(1);
+        self.tx = tx;
+
+        let node = Arc::new(Mutex::new(self));
+        let raft = Arc::clone(&node);
+
+        pool.spawn(Self::routine(raft, rx));
+
+        node
+    }
+
+    /// state machine
+    async fn routine(raft: Arc<Mutex<Raft>>, mut rx: mpsc::Receiver<Event>) {
+        loop {
+            let state = raft.lock().unwrap().state.clone();
+            match state.role {
+                Follower => Self::handle_follower(&raft, &mut rx).await,
+                Candidate => Self::handle_candidate(&raft, &mut rx).await,
+                Leader => Self::handle_leader(&raft, &mut rx).await,
+                Killed => return,
+            }
+        }
+    }
+
+    async fn handle_follower(raft: &Arc<Mutex<Raft>>, rx: &mut mpsc::Receiver<Event>) {
+        todo!()
+    }
+    async fn handle_candidate(raft: &Arc<Mutex<Raft>>, rx: &mut mpsc::Receiver<Event>) {
+        todo!()
+    }
+    async fn handle_leader(raft: &Arc<Mutex<Raft>>, rx: &mut mpsc::Receiver<Event>) {
+        todo!()
     }
 }
