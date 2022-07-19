@@ -618,38 +618,15 @@ impl Raft {
                     rf.transform(Candidate);
                 }
                 HigherTerm | VoteToCandidate => return,
-                _ => unreachable!(),
+                VoteTimeOut => todo!(),
+                GetMajority => todo!(),
             }
         }
     }
 
     /// candidate routine
     async fn handle_candidate(raft: &Arc<Mutex<Raft>>, rx: &mut mpsc::Receiver<Event>) {
-        {
-            let rf = raft.lock().unwrap();
-            let term = rf.state.term;
-            let me = rf.me;
-            let (last_log_index, last_log_term) = rf.last_log_info();
-            let args = RequestVoteArgs {
-                term,
-                candidate_id: me as u64,
-                last_log_index,
-                last_log_term,
-            };
-
-            let peers = rf.peers.len();
-            let threshold = peers / 2 + 1;
-            let rxs = (0..me)
-                .chain((me + 1)..peers)
-                .map(|i| rf.send_request_vote(i, args.clone()))
-                .collect();
-            rf.pool.spawn(Self::handle_vote_reply(
-                Arc::clone(raft),
-                rxs,
-                me,
-                threshold,
-            ));
-        }
+        Self::candidate_request_vote(raft);
 
         let dur = rand::thread_rng().gen_range(ELECTION_TIMEOUT_MIN..ELECTION_TIMEOUT_MAX);
         let mut vote_timeout = Delay::new(dur).fuse();
@@ -668,33 +645,40 @@ impl Raft {
                     rf.transform(Candidate);
                 }
                 HigherTerm => return,
-                _ => unreachable!(),
+                VoteToCandidate => todo!(),
+                ElectionTimeout => todo!(),
             }
         }
     }
 
+    /// handle request vote replys
     async fn handle_vote_reply(
         raft: Arc<Mutex<Raft>>,
         mut rxs: FuturesUnordered<Receiver<Result<RequestVoteReply>>>,
         me: usize,
         threshold: usize,
+        old_term: u64,
     ) {
         let mut cnt = 1;
         while let Some(Ok(res)) = rxs.next().await {
             match res {
                 Ok(RequestVoteReply { term, vote_granted }) => {
                     let mut rf = raft.lock().unwrap();
-                    if !rf.check_term(term) {
+                    if !rf.check_term(term)
+                        || !matches!(rf.state.role, Candidate)
+                        || old_term != rf.state.term
+                    {
                         return;
                     }
                     if vote_granted {
                         cnt += 1;
                         info!(
                             "VOTE S{} get vote {}/{} at T{}",
-                            me, cnt, threshold, rf.state.term
+                            me, cnt, threshold, old_term
                         );
                         if cnt >= threshold {
                             rf.send_event(GetMajority);
+                            return;
                         }
                     }
                 }
@@ -702,6 +686,33 @@ impl Raft {
                 _ => unreachable!(),
             }
         }
+    }
+
+    /// start request_vote
+    fn candidate_request_vote(raft: &Arc<Mutex<Raft>>) {
+        let rf = raft.lock().unwrap();
+        let term = rf.state.term;
+        let me = rf.me;
+        let (last_log_index, last_log_term) = rf.last_log_info();
+        let args = RequestVoteArgs {
+            term,
+            candidate_id: me as u64,
+            last_log_index,
+            last_log_term,
+        };
+        let peers = rf.peers.len();
+        let threshold = peers / 2 + 1;
+        let rxs = (0..me)
+            .chain((me + 1)..peers)
+            .map(|i| rf.send_request_vote(i, args.clone()))
+            .collect();
+        rf.pool.spawn(Self::handle_vote_reply(
+            Arc::clone(raft),
+            rxs,
+            me,
+            threshold,
+            term,
+        ));
     }
 
     /// leader routine
@@ -718,7 +729,10 @@ impl Raft {
             };
             match event {
                 HigherTerm => return,
-                _ => unreachable!(),
+                VoteToCandidate => todo!(),
+                VoteTimeOut => todo!(),
+                ElectionTimeout => todo!(),
+                GetMajority => todo!(),
             }
         }
     }
