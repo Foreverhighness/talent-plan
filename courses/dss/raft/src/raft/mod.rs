@@ -5,7 +5,7 @@ use std::time::Duration;
 use futures::channel::mpsc::UnboundedSender;
 use futures::channel::mpsc::{self, Sender};
 use futures::channel::oneshot::{channel, Receiver};
-use optional::Optioned;
+use optional::{some, Optioned};
 
 #[cfg(test)]
 pub mod config;
@@ -89,6 +89,7 @@ type Logs = Vec<LogEntry>;
 #[derive(Debug, Clone, Copy)]
 enum Event {
     HigherTerm,
+    VoteToCandidate,
 }
 use Event::*;
 
@@ -457,6 +458,7 @@ impl RaftService for Node {
             });
         }
 
+        rf.vote(args.candidate_id);
         Ok(RequestVoteReply {
             term: rf.state.term,
             vote_granted: true,
@@ -518,5 +520,18 @@ impl Raft {
             return true;
         }
         self.state.term == term
+    }
+
+    /// vote to candidate
+    fn vote(&mut self, candidate_id: u64) {
+        assert!(matches!(self.state.role, Follower));
+        assert!(self.voted_for.is_none() || self.voted_for.unwrap() == candidate_id);
+        info!(
+            "VOTE S{} => S{} at T{}",
+            self.me, candidate_id, self.state.term
+        );
+
+        self.voted_for = some(candidate_id);
+        self.send_event(VoteToCandidate);
     }
 }
