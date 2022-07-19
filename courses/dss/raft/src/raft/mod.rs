@@ -1,7 +1,10 @@
-use std::sync::mpsc::{sync_channel, Receiver};
+#![allow(dead_code)]
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use futures::channel::mpsc::UnboundedSender;
+use futures::channel::mpsc::{self, Sender};
+use futures::channel::oneshot::{channel, Receiver};
 use optional::Optioned;
 
 #[cfg(test)]
@@ -14,6 +17,10 @@ mod tests;
 use self::errors::*;
 use self::persister::*;
 use crate::proto::raftpb::*;
+
+const ELECTION_TIMEOUT_MIN: Duration = Duration::from_millis(450);
+const ELECTION_TIMEOUT_MAX: Duration = Duration::from_millis(750);
+const HEARTBEAT_TIME: Duration = Duration::from_millis(200);
 
 mod seal {
     #[derive(Clone, Copy, Debug)]
@@ -55,7 +62,9 @@ pub enum Role {
     Follower,
     Candidate,
     Leader,
+    Killed,
 }
+use Role::*;
 
 /// State of a raft peer.
 #[derive(Default, Clone, Debug)]
@@ -71,22 +80,23 @@ impl State {
     }
     /// Whether this peer believes it is the leader.
     pub fn is_leader(&self) -> bool {
-        matches!(self.role, Role::Leader)
-    }
-
-    /// return Role
-    fn role(&self) -> Role {
-        self.role
+        matches!(self.role, Leader)
     }
 }
 
 type Logs = Vec<LogEntry>;
 
+#[derive(Debug, Clone, Copy)]
+enum Event {
+    HigherTerm,
+}
+use Event::*;
+
 // A single Raft peer.
 #[allow(dead_code)]
 pub struct Raft {
     // RPC end points of all peers
-    peers: Vec<RaftClient>,
+    peers: Vec<Arc<RaftClient>>,
     // Object to hold this peer's persisted state
     persister: Box<dyn Persister>,
     // this peer's index into peers[]
@@ -113,6 +123,12 @@ pub struct Raft {
     // other state
     apply_ch: UnboundedSender<ApplyMsg>,
     leader_id: Optioned<u64>,
+
+    // threadpool
+    pool: Arc<RaftClient>,
+
+    // event sender
+    tx: Sender<Event>,
 }
 
 impl Raft {
@@ -132,7 +148,11 @@ impl Raft {
     ) -> Raft {
         let raft_state = persister.raft_state();
 
-        // Your initialization code here (2A, 2B, 2C).
+        let peers: Vec<_> = peers.into_iter().map(Arc::new).collect();
+        let pool = Arc::clone(&peers[me]);
+
+        let (tx, _) = mpsc::channel(1);
+
         let mut rf = Raft {
             peers,
             persister,
@@ -150,6 +170,9 @@ impl Raft {
 
             apply_ch,
             leader_id: optional::none(),
+
+            pool,
+            tx,
         };
 
         // initialize from state persisted before a crash
@@ -209,21 +232,9 @@ impl Raft {
         server: usize,
         args: RequestVoteArgs,
     ) -> Receiver<Result<RequestVoteReply>> {
-        // Your code here if you want the rpc becomes async.
-        // Example:
-        // ```
-        // let peer = &self.peers[server];
-        // let peer_clone = peer.clone();
-        // let (tx, rx) = channel();
-        // peer.spawn(async move {
-        //     let res = peer_clone.request_vote(&args).await.map_err(Error::Rpc);
-        //     tx.send(res);
-        // });
-        // rx
-        // ```
         let peer = &self.peers[server];
-        let peer_clone = peer.clone();
-        let (tx, rx) = sync_channel::<Result<RequestVoteReply>>(1);
+        let peer_clone = Arc::clone(peer);
+        let (tx, rx) = channel::<Result<RequestVoteReply>>();
         peer.spawn(async move {
             let res = peer_clone.request_vote(&args).await.map_err(Error::Rpc);
             let _ = tx.send(res);
@@ -231,15 +242,14 @@ impl Raft {
         rx
     }
 
-    #[allow(dead_code)]
     fn send_append_entries(
         &self,
         server: usize,
         args: AppendEntriesArgs,
     ) -> Receiver<Result<AppendEntriesReply>> {
         let peer = &self.peers[server];
-        let peer_clone = peer.clone();
-        let (tx, rx) = sync_channel::<Result<AppendEntriesReply>>(1);
+        let peer_clone = Arc::clone(peer);
+        let (tx, rx) = channel::<Result<AppendEntriesReply>>();
         peer.spawn(async move {
             let res = peer_clone.append_entries(&args).await.map_err(Error::Rpc);
             let _ = tx.send(res);
@@ -361,17 +371,9 @@ impl Node {
         self.raft.lock().unwrap().state.is_leader()
     }
 
-    /// Role
-    fn role(&self) -> Role {
-        self.raft.lock().unwrap().state.role()
-    }
-
     /// The current state of this peer.
     pub fn get_state(&self) -> State {
-        State {
-            term: self.term(),
-            role: self.role(),
-        }
+        self.raft.lock().unwrap().state.clone()
     }
 
     /// the tester calls kill() when a Raft instance won't be
@@ -423,42 +425,40 @@ impl RaftService for Node {
         // Your code here (2A, 2B).
 
         // Get state
-        let rf = self.raft.lock().unwrap();
-        let term = rf.state.term();
+        let mut rf = self.raft.lock().unwrap();
         let voted_for = rf.voted_for;
         let (last_log_index, last_log_term) = rf.last_log_info();
-        drop(rf);
 
         // 1. Reply false if term < currentTerm (§5.1)
-        if args.term < term {
+        if !rf.check_term(args.term) {
             return Ok(RequestVoteReply {
-                term,
+                term: rf.state.term,
                 vote_granted: false,
             });
         }
         // 2. If votedFor is null or candidateId
         if voted_for.is_some() && voted_for.unwrap() != args.candidate_id {
             return Ok(RequestVoteReply {
-                term,
+                term: rf.state.term,
                 vote_granted: false,
             });
         }
         // and candidate’s log is at least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
         if args.last_log_term < last_log_term {
             return Ok(RequestVoteReply {
-                term,
+                term: rf.state.term,
                 vote_granted: false,
             });
         }
         if args.last_log_index < last_log_index {
             return Ok(RequestVoteReply {
-                term,
+                term: rf.state.term,
                 vote_granted: false,
             });
         }
 
         Ok(RequestVoteReply {
-            term,
+            term: rf.state.term,
             vote_granted: true,
         })
     }
@@ -466,14 +466,12 @@ impl RaftService for Node {
     // just for pass lab2a
     async fn append_entries(&self, args: AppendEntriesArgs) -> labrpc::Result<AppendEntriesReply> {
         // Get state
-        let rf = self.raft.lock().unwrap();
-        let term = rf.state.term();
-        drop(rf);
+        let mut rf = self.raft.lock().unwrap();
 
         // 1. Reply false if term < currentTerm (§5.1)
-        if args.term < term {
+        if !rf.check_term(args.term) {
             return Ok(AppendEntriesReply {
-                term,
+                term: rf.state.term,
                 success: false,
             });
         }
@@ -485,7 +483,7 @@ impl RaftService for Node {
         // todo!();
 
         Ok(AppendEntriesReply {
-            term,
+            term: rf.state.term,
             success: true,
         })
     }
@@ -498,5 +496,27 @@ impl Raft {
             .last()
             .map(|log| (log.index, log.term))
             .unwrap_or((0, 0))
+    }
+
+    /// change term
+    fn change_term(&mut self, new_term: u64) {
+        info!("TERM S{} T{} -> T{}", self.me, self.state.term, new_term);
+        self.state.term = new_term;
+    }
+
+    /// send event
+    fn send_event(&mut self, event: Event) {
+        info!("EVNT S{} Get event {:?}", self.me, event);
+        let _ = self.tx.try_send(event);
+    }
+
+    /// check term for every request and reply
+    fn check_term(&mut self, term: u64) -> bool {
+        if self.state.term < term {
+            self.change_term(term);
+            self.send_event(HigherTerm);
+            return true;
+        }
+        self.state.term == term
     }
 }
