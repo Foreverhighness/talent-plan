@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -97,6 +96,7 @@ enum Event {
     VoteTimeOut,
     ElectionTimeout,
     GetMajority,
+    HeartBeat,
 }
 use Event::*;
 
@@ -339,8 +339,7 @@ pub struct Node {
 impl Node {
     /// Create a new raft service.
     pub fn new(raft: Raft) -> Node {
-        // Your code here.
-        crate::your_code_here(raft)
+        Node { raft: raft.run() }
     }
 
     /// the service using Raft (e.g. a k/v server) wants to start
@@ -493,6 +492,10 @@ impl RaftService for Node {
         // 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
         // todo!();
 
+        rf.transform(Follower);
+        rf.leader_id = some(args.leader_id);
+        rf.send_event(HeartBeat);
+
         Ok(AppendEntriesReply {
             term: rf.state.term,
             success: true,
@@ -507,6 +510,23 @@ impl Raft {
             .last()
             .map(|log| (log.index, log.term))
             .unwrap_or((0, 0))
+    }
+
+    fn get_entries_info(&self, _server: usize) -> (u64, u64, Vec<Vec<u8>>) {
+        (0, 0, Vec::new())
+    }
+
+    fn append_entries_args(&self, server: usize) -> AppendEntriesArgs {
+        let (term, leader_id, leader_commit) = (self.state.term, self.me as u64, self.commit_index);
+        let (prev_log_index, prev_log_term, entries) = self.get_entries_info(server);
+        AppendEntriesArgs {
+            term,
+            leader_id,
+            prev_log_index,
+            prev_log_term,
+            entries,
+            leader_commit,
+        }
     }
 
     /// change term
@@ -528,10 +548,7 @@ impl Raft {
         if self.state.term < term {
             // must change before return
             self.change_term(term);
-            match self.state.role {
-                Candidate | Leader => self.transform(Follower),
-                Follower | Killed => (),
-            }
+            self.transform(Follower);
             self.send_event(HigherTerm);
             return true;
         }
@@ -567,13 +584,11 @@ impl Raft {
 
     /// change state
     fn transform(&mut self, target: Role) {
-        info!(
-            "TRAN S{} {:?} => {:?} at T{}",
-            self.me, self.state.role, target, self.state.term
-        );
         match target {
             Follower => {
-                assert!(matches!(self.state.role, Candidate | Leader));
+                if let Follower = target {
+                    return;
+                }
             }
             Candidate => {
                 assert!(matches!(self.state.role, Follower | Candidate));
@@ -586,6 +601,10 @@ impl Raft {
             }
             Killed => {}
         }
+        info!(
+            "TRAN S{} {:?} => {:?} at T{}",
+            self.me, self.state.role, target, self.state.term
+        );
         self.state.role = target;
     }
 
@@ -616,8 +635,9 @@ impl Raft {
                     let mut rf = raft.lock().unwrap();
                     info!("TIME S{} election timeout at T{}", rf.me, rf.state.term);
                     rf.transform(Candidate);
+                    return;
                 }
-                HigherTerm | VoteToCandidate => return,
+                HigherTerm | VoteToCandidate | HeartBeat => return,
                 VoteTimeOut => todo!(),
                 GetMajority => todo!(),
             }
@@ -639,12 +659,14 @@ impl Raft {
                 GetMajority => {
                     let mut rf = raft.lock().unwrap();
                     rf.transform(Leader);
+                    return;
                 }
                 VoteTimeOut => {
                     let mut rf = raft.lock().unwrap();
                     rf.transform(Candidate);
+                    return;
                 }
-                HigherTerm => return,
+                HigherTerm | HeartBeat => return,
                 VoteToCandidate => todo!(),
                 ElectionTimeout => todo!(),
             }
@@ -717,9 +739,7 @@ impl Raft {
 
     /// leader routine
     async fn handle_leader(raft: &Arc<Mutex<Raft>>, rx: &mut mpsc::Receiver<Event>) {
-        {
-            let _rf = raft.lock().unwrap();
-        }
+        Self::leader_append_entries(raft);
 
         let mut heartbeat = Delay::new(HEARTBEAT_TIME).fuse();
         loop {
@@ -728,11 +748,55 @@ impl Raft {
                 e = rx.next() => e.unwrap(),
             };
             match event {
-                HigherTerm => return,
+                HigherTerm | HeartBeat => return,
                 VoteToCandidate => todo!(),
                 VoteTimeOut => todo!(),
                 ElectionTimeout => todo!(),
                 GetMajority => todo!(),
+            }
+        }
+    }
+
+    fn leader_append_entries(raft: &Arc<Mutex<Raft>>) {
+        let rf = raft.lock().unwrap();
+        let old_term = rf.state.term;
+        let me = rf.me;
+        let peers = rf.peers.len();
+        let rxs: FuturesUnordered<_> = (0..me)
+            .chain((me + 1)..peers)
+            .map(|i| rf.send_append_entries(i, rf.append_entries_args(i)))
+            .collect();
+        rf.pool.spawn(Self::handle_append_reply(
+            Arc::clone(raft),
+            rxs,
+            me,
+            // threshold,
+            old_term,
+        ));
+    }
+
+    async fn handle_append_reply(
+        raft: Arc<Mutex<Raft>>,
+        mut rxs: FuturesUnordered<Receiver<Result<AppendEntriesReply>>>,
+        me: usize,
+        old_term: u64,
+    ) {
+        while let Some(Ok(res)) = rxs.next().await {
+            match res {
+                Ok(AppendEntriesReply { term, success }) => {
+                    let mut rf = raft.lock().unwrap();
+                    if !rf.check_term(term)
+                        || !matches!(rf.state.role, Leader)
+                        || old_term != rf.state.term
+                    {
+                        return;
+                    }
+                    if success {
+                        info!("HEAR S{}", me);
+                    }
+                }
+                Err(Error::Rpc(rpc)) => debug!("RPC error: {:?}", rpc),
+                _ => unreachable!(),
             }
         }
     }
