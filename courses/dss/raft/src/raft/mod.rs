@@ -435,7 +435,6 @@ impl RaftService for Node {
 
         // Get state
         let mut rf = self.raft.lock().unwrap();
-        let voted_for = rf.voted_for;
         let (last_log_index, last_log_term) = rf.last_log_info();
 
         // 1. Reply false if term < currentTerm (§5.1)
@@ -445,6 +444,7 @@ impl RaftService for Node {
                 vote_granted: false,
             });
         }
+        let voted_for = rf.voted_for;
         // 2. If votedFor is null or candidateId
         if voted_for.is_some() && voted_for.unwrap() != args.candidate_id {
             return Ok(RequestVoteReply {
@@ -586,7 +586,7 @@ impl Raft {
     fn transform(&mut self, target: Role) {
         match target {
             Follower => {
-                if let Follower = target {
+                if let Follower = self.state.role {
                     return;
                 }
             }
@@ -638,8 +638,8 @@ impl Raft {
                     return;
                 }
                 HigherTerm | VoteToCandidate | HeartBeat => return,
-                VoteTimeOut => todo!(),
-                GetMajority => todo!(),
+                VoteTimeOut => (),
+                GetMajority => (),
             }
         }
     }
@@ -657,8 +657,6 @@ impl Raft {
             };
             match event {
                 GetMajority => {
-                    let mut rf = raft.lock().unwrap();
-                    rf.transform(Leader);
                     return;
                 }
                 VoteTimeOut => {
@@ -667,8 +665,8 @@ impl Raft {
                     return;
                 }
                 HigherTerm | HeartBeat => return,
-                VoteToCandidate => todo!(),
-                ElectionTimeout => todo!(),
+                VoteToCandidate => (),
+                ElectionTimeout => (),
             }
         }
     }
@@ -699,6 +697,8 @@ impl Raft {
                             me, cnt, threshold, old_term
                         );
                         if cnt >= threshold {
+                            rf.transform(Leader);
+                            info!("LEAD S{} become leader at T{}!", rf.me, rf.state.term);
                             rf.send_event(GetMajority);
                             return;
                         }
@@ -749,10 +749,10 @@ impl Raft {
             };
             match event {
                 HigherTerm | HeartBeat => return,
-                VoteToCandidate => todo!(),
-                VoteTimeOut => todo!(),
-                ElectionTimeout => todo!(),
-                GetMajority => todo!(),
+                VoteToCandidate => (),
+                VoteTimeOut => (),
+                ElectionTimeout => (),
+                GetMajority => (),
             }
         }
     }
