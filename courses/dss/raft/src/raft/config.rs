@@ -69,7 +69,7 @@ fn init_logger() {
 
                 writeln!(
                     buf,
-                    "[{:04} {:>5}] {}",
+                    "{:08} {} {}",
                     ts.duration_since(now).unwrap().as_millis(),
                     buf.default_styled_level(record.level()),
                     record.args()

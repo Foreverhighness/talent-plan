@@ -473,7 +473,6 @@ impl RaftService for Node {
         })
     }
 
-    // just for pass lab2a
     async fn append_entries(&self, args: AppendEntriesArgs) -> labrpc::Result<AppendEntriesReply> {
         // Get state
         let mut rf = self.raft.lock().unwrap();
@@ -486,7 +485,8 @@ impl RaftService for Node {
             });
         }
 
-        // 2.Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm (§5.3)
+        // 2. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm (§5.3)
+
         // 3. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
         // 4. Append any new entries not already in the log
         // 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
@@ -792,7 +792,7 @@ impl Raft {
                         return;
                     }
                     if success {
-                        info!("HEAR S{}", me);
+                        info!("HEAR S{} Get append reply", me);
                     }
                 }
                 Err(Error::Rpc(rpc)) => debug!("RPC error: {:?}", rpc),
