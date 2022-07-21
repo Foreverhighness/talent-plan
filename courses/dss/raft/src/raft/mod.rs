@@ -97,6 +97,7 @@ enum Event {
     ElectionTimeout,
     GetMajority,
     HeartBeat,
+    Kill,
 }
 use Event::*;
 
@@ -394,7 +395,9 @@ impl Node {
     /// a VIRTUAL crash in tester, so take care of background
     /// threads you generated with this Raft Node.
     pub fn kill(&self) {
-        // Your code here, if desired.
+        let mut rf = self.raft.lock().unwrap();
+        rf.state.role = Killed;
+        rf.send_event(Kill);
     }
 
     /// A service wants to switch to snapshot.
@@ -637,7 +640,7 @@ impl Raft {
                     rf.transform(Candidate);
                     return;
                 }
-                HigherTerm | VoteToCandidate | HeartBeat => return,
+                HigherTerm | VoteToCandidate | HeartBeat | Kill => return,
                 VoteTimeOut => (),
                 GetMajority => (),
             }
@@ -664,7 +667,7 @@ impl Raft {
                     rf.transform(Candidate);
                     return;
                 }
-                HigherTerm | HeartBeat => return,
+                HigherTerm | HeartBeat | Kill => return,
                 VoteToCandidate => (),
                 ElectionTimeout => (),
             }
@@ -748,7 +751,7 @@ impl Raft {
                 e = rx.next() => e.unwrap(),
             };
             match event {
-                HigherTerm | HeartBeat => return,
+                HigherTerm | HeartBeat | Kill => return,
                 VoteToCandidate => (),
                 VoteTimeOut => (),
                 ElectionTimeout => (),
